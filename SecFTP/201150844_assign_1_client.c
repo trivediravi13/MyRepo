@@ -1,0 +1,745 @@
+#include <stdio.h>
+#include<string.h>
+#include<math.h>
+#include<stdlib.h>
+#include<time.h>
+#include <netdb.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <netinet/in.h>
+
+/************************************************/
+/*		Global Data                    */ 
+/***********************************************/
+
+#define kUserNameSize 8
+#define kPasswdSize 10
+#define kMaxFileNameSize 100
+
+#define STACK_SIZE 10000
+#define NOT_EXIST 0xFFFF
+#define LARGE 99
+#define MAX_ITERATION 10  // Max tests in Miller-Robin Primality Test.
+#define div /
+#define mod %
+#define and &&
+#define true 1
+#define false 0
+
+const unsigned int SERVICE_PORT = 13108;
+#define MAX_LEN 1024
+
+#define DEFAULT_SERVER "127.0.0.1"
+
+
+
+/* Opcodes */
+#define PUBKEY 10  /* Public key */
+#define ACK 20     /* Acknowledgement msg */
+#define ENCMSG 100  /* Encrypted msg */
+#define DCRMSG 110  /* Decrypted message */
+#define LOGINREQ 30 /* login request */
+#define LOGINREP 40
+#define LOGINFAILED 90
+#define REQSERV 50
+#define REQCOM 60
+#define DISCONNECT 70 
+#define LOGINSUCCESSFUL 80
+
+
+
+
+
+/* Define the header of a message structure */
+typedef struct {
+ int opcode;
+ } Hdr;
+
+typedef struct {
+ char UID[kUserNameSize+1];
+ char PWD[kPasswdSize+1];
+ }LoginReq;
+
+typedef struct {
+ int LoginStatus;
+
+ }LoginResp;
+
+/* Diffie-Hellman public key */
+typedef struct {
+long q; /* large prime number */
+long g; /* a primitive root of q */
+long Y ; /* public key, Y = g x (mod q), x is private key */
+} DHPubKey;
+
+typedef struct {
+ char FileName[kMaxFileNameSize+1];
+
+}RecvFileReq;
+
+ typedef struct {
+
+  char FData[MAX_LEN+1];
+ }FileData;
+
+ typedef union {
+ LoginReq uLoginReq;
+ LoginResp uLoginResp;
+ DHPubKey uDHPubKey;
+ RecvFileReq uRecvFileReq;
+ FileData uFileData;	
+ 
+ }MsgType;
+
+/* Define the body of a message */
+typedef struct {
+ Hdr hdr;
+ MsgType MsgPayload;
+ 
+} Msg;
+
+typedef struct{
+	int top;
+	char c[STACK_SIZE];
+} stack;
+
+typedef short boolean;
+
+static long int KEY = -1;
+long int mul_inverse=0;
+long int gcd_value;
+stack s;
+int print_flag=0;
+int print_flag1=0;
+
+/* Function prototypes */
+int serverConnect ( char * );
+Msg Talk_to_server ( int , Msg );
+void KeyGeneration(long int *q, long int *alpha, long int *private_key, long int *public_key);
+void EncryptionAlgorithm(char *M, long int secret_key, char*);
+void DecryptionAlgorithm(char *M, long int secret_key, char*);
+
+boolean verify_prime(long int p);
+long int gcd(long int a, long int b);
+void extended_euclid(long int A1, long int A2, long int A3, long int B1, long int B2,long int B3);
+long int ModPower(long int x, long int e, long int n);
+boolean MillerRobinTest(long int n, int iteration);
+void decimal_to_binary(long int n, char str[]);
+void reverse_string(char x[]);
+long int modulo ( long int x, long int n );
+long int primitive_root ( long int q);
+
+
+char gindex[97];
+int encodebyASCII(char ch)
+{
+  int alpha=(int)ch;
+  if(alpha==10) return 0;
+  return (alpha-31);
+}
+
+//Decoding an int to char
+char decodebyASCII(int i)
+{
+  return gindex[i];
+}
+
+/*Computing gcd of two integers */
+long int gcd(long int a, long int b)
+{
+	long int r;
+
+	if(a<0) a= -a;
+	if(b<0) b= -b;
+
+	if(b==0)
+	  return a;
+
+	r= a mod b;
+
+	// exhange r and b, initialize a=b and b=r;
+	
+	a=b;
+	b=r;
+
+	return gcd(a,b);
+
+}
+
+
+/* Euclid's Extended GCD algorithm to compute the modular inverse of an element */
+void extended_euclid(long int A1, long int A2, long int A3, long int B1, long int B2,long int B3)
+{
+	long int Q;
+	long int T1,T2,T3;
+
+	if(B3==0){
+		  gcd_value= A3;
+		  mul_inverse= NOT_EXIST;
+		  return;
+	}
+
+	if(B3==1){
+		  gcd_value= B3;
+		  mul_inverse= B2;
+		  return;
+	}
+
+	Q=(int)(A3/B3);
+
+	T1=A1-Q*B1;
+	T2=A2-Q*B2;
+	T3=A3-Q*B3;
+
+	A1=B1;
+	A2=B2;
+	A3=B3;
+
+	B1=T1;
+	B2=T2;
+	B3=T3;
+
+	extended_euclid(A1,A2,A3,B1,B2,B3);
+
+}
+
+
+/* Selecting a prime using the Miller-Robin primality test algorithm */ 
+boolean MillerRobinTest(long int n, int iteration)
+{
+	// n is the given integer and k is the given desired
+	// number of iterations in this primality test algorithm.
+	// Return true if all the iterations test passed to give
+	// the higher confidence that n is a prime, otherwise
+	// return false if n is composite.
+
+	long int m, t;
+        int i,j;
+	long int a, u;
+        int flag;
+
+         if(n mod 2 == 0)
+		 return false;  // n is composite.
+
+	 m=(n-1) div 2;
+	 t=1;
+
+	 while( m mod 2 == 0)  // repeat until m is even
+	 {
+		 m= m div 2;
+		 t=t+1;
+       	}
+     
+      for (j=0; j < iteration; j++) {  // Repeat the test for MAX_ITERATION times
+         flag = 0;
+         srand((unsigned int) time(NULL));
+         a = random() mod n + 1;  // select a in {1,2,......,n}
+         u = ModPower(a,m,n);
+         if (u == 1 || u == n - 1) flag = 1;     
+
+	 for(i=0;i<t;i++) 
+	 {
+		 
+                 if(u == n - 1)  flag = 1;
+		  //return true; //n is prime
+                 u = (u * u) mod n;
+                 
+	 }
+         if ( flag == 0 ) return false; // n is composite
+
+     }
+
+	 return true;  // n is prime.
+}
+
+
+/* Finding a primitive root of prime n */
+long int primitive_root ( long int n)
+{
+   long int r, phi_n;
+   long int *pw;
+   int i, j, flag;
+
+   while ( 1 ) {
+      srand((unsigned int) time(NULL));
+      r = random() % n;
+      if ( gcd ( r, n ) != 1) continue;
+
+      /* compute powers of r modulo n */
+      phi_n = n - 1; /* Since n is prime */
+      pw = (long int *) malloc (sizeof(long int) * (phi_n + 1) );
+      if ( pw == NULL) {
+          printf ("Error in allocating space....\n");
+          exit(0);
+      }
+      flag = 0;
+      pw[0] = r;
+      for ( i = 1; i< phi_n; i++ ) {
+        pw[i] = modulo ( pw[i-1] * r, n);
+        /* check for repeatations */
+        for ( j = 0; j < i; j++ ) {
+          if ( pw [i] == pw[j] ) {
+            printf("%ld is not a primitive root of %ld\n", r, n);
+            flag = 1;
+            break;
+           }
+        }
+      }
+        if ( flag ) continue;
+        if ( flag == 0 ) {
+          if (pw[i-1] == 1) 
+           return r;
+          else 
+           continue;
+        }
+    } /* end while */
+       
+
+}
+
+
+//KEY GENERATION ALGORITHM IN DIFFIE-HELLMAN KEY EXCHANGE PROTOCOL
+void KeyGeneration(long int *q, long int *alpha, long int *private_key, long int *public_key)
+{
+	
+        long int p;
+	if(print_flag1)
+		printf("\n selecting q->\n\r");
+
+	
+        
+	while(1)
+	{
+               srand((unsigned int) time(NULL));
+               p = random() % LARGE;
+               /* test for even number */
+               if ( p & 0x01 == 0 ) continue;
+
+               /* Trivial divisibility test by primes 3, 5, 7, 11, 13, 17, 19 */
+               if ( (p % 3 == 0 ) || (p % 5 == 0) || (p % 7 == 0) || (p % 11 == 0 )
+                    || (p % 13 == 0) || ( p % 17 == 0) || ( p% 19 == 0) )
+               continue;
+
+               if( MillerRobinTest(p, MAX_ITERATION) )
+		break;
+		
+	}
+
+    *q = p;
+    if (verify_prime(p) )
+      printf( "q = %ld is prime\n", *q);
+     else {
+      printf("q = %ld is composite\n", *q);
+      exit(0);
+     }
+     
+     /* Select a primitive root of q */
+     *alpha = primitive_root( p );
+          
+     /* Select a private key  < q  randomly */
+     *private_key = rand() % p;
+
+    /* Compute the public key */
+    *public_key = ModPower(*alpha, *private_key, *q);
+
+} 
+
+
+boolean verify_prime(long int p)
+{
+long int d;
+// Test for p;
+for(d = 2; d <= (long int) sqrt(p); d++ )
+  if ( p % d == 0 ) return false;
+return true;
+}
+
+
+void EncryptionAlgorithm(char *M,long int secret_key, char *cipher)
+{
+	 long int enc;
+	 int iter;
+	 printf("\nStarted Encryption\n");
+	 for(iter=0;iter<strlen(M);iter++)
+	 {
+	    
+	     enc=(int)encodebyASCII(M[iter]);
+	     
+	     enc=(enc+secret_key)%97;
+	   
+	     cipher[iter]=decodebyASCII(enc);
+	   
+	 }
+
+
+}
+
+void DecryptionAlgorithm(char *M,long int secret_key, char *plaintext)
+{
+ long int dec;
+
+ int iter;
+ printf("\nStarted Decryption");
+ for(iter=0;iter<strlen(M);iter++)
+ {
+    
+     dec=(int)encodebyASCII(M[iter]);
+     dec=(dec-secret_key)%97;
+     if(dec<0)
+        dec+=97;
+    
+     plaintext[iter]=decodebyASCII(dec);
+
+ }
+
+
+}
+
+/*Convert decimal to binary format */
+void decimal_to_binary(long int n, char str[])
+{
+	// n is the given decimal integer.
+	// Purpose is to find the binary conversion
+	// of n.
+        // Initialise the stack.
+	
+	 int r;
+	 s.top=0;
+	
+	while(n != 0)
+
+	{
+		r= n mod 2;
+		s.top++;
+		if(s.top >= STACK_SIZE)
+		{
+			printf("\nstack overflown!\n");
+			return;
+		}
+		s.c[s.top]= r + 48;
+		if(print_flag)
+		 printf("\n s.c[%d]= %c\n",s.top,s.c[s.top]);
+		n=n div 2;
+
+	}
+
+	while(s.top)
+	{
+          *str++=s.c[s.top--];
+	}
+	*str='\0';
+return;
+}
+
+
+// Algorithm: reverse a string.
+void reverse_string(char x[])
+{
+ int n=strlen(x)-1;
+ int i=0;
+ char temp[STACK_SIZE];
+
+ for(i=0;i<=n;i++)
+	 temp[i]= x[n-i];
+
+
+ for(i=0;i<=n;i++)
+	 x[i]=temp[i];
+}
+
+/* modulo operation */
+long int modulo ( long int x, long int n )
+{
+if ( x >= 0 ) 
+  x = x % n;
+ 
+ while ( x < 0 ) {
+   x = - x;
+   x = (( n - 1) * ( x % n )) % n;
+ }
+ return x;
+}
+
+/* Algorithm: Modular Power: x^e(mod n) using 
+   the repeated square-and-multiply algorithm */
+long int ModPower(long int x, long int e, long int n)
+{
+	// To calculate y:=x^e(mod n).
+        //long y;
+        long int y;
+	long int t;
+        int i;
+	int BitLength_e;
+	char b[STACK_SIZE];
+
+        //printf("e(decimal) = %ld\n",e);
+	decimal_to_binary(e,b);
+	if(print_flag)
+	 printf("b = %s\n", b);
+	BitLength_e = strlen(b);
+        
+	y = x;
+
+	reverse_string(b);
+
+	for(i = BitLength_e - 2; i >= 0 ; i--)
+	{
+		if(print_flag)
+		 printf("\nb[%d]=%c", i, b[i]);
+		if(b[i] == '0')
+			t = 1;
+		else t = x;
+                y = y * y;
+                y = modulo (y, n);
+
+		y = y*t;
+                y = modulo (y, n);
+	}
+
+        
+	return y;
+        
+} 
+
+
+/* Connect with the server: socket() and connect() */
+int serverConnect ( char *sip )
+{
+   int cfd;
+   struct sockaddr_in saddr;   /* address of server */
+   int status;
+
+   /* request for a socket descriptor */
+   cfd = socket (AF_INET, SOCK_STREAM, 0);
+   if (cfd == -1) {
+      fprintf (stderr, "*** Client error: unable to get socket descriptor\n");
+      exit(1);
+   }
+
+   /* set server address */
+   saddr.sin_family = AF_INET;              /* Default value for most applications */
+   saddr.sin_port = htons(SERVICE_PORT);    
+                                            /* Service port in network byte order */
+   saddr.sin_addr.s_addr = inet_addr(sip);  /* Convert server's IP to short int */
+   bzero(&(saddr.sin_zero),8);              /* zero the rest of the structure */
+
+   /* set up connection with the server */
+   status = connect(cfd, (struct sockaddr *)&saddr, sizeof(struct sockaddr));
+   if (status == -1) {
+      fprintf(stderr, "*** Client error: unable to connect to server\n");
+      exit(1);
+   }
+
+   fprintf(stderr, "Connected to server\n");
+
+   return cfd;
+}
+
+
+/* Interaction with the server */
+Msg Talk_to_server ( int cfd, Msg send_msg )
+{
+
+   int nbytes, status;
+   int src_addr, dest_addr;
+   int period;
+   int i = 0;
+   Msg recv_msg;
+   int flag;
+
+
+   printf ( " Sending message : %d\n", send_msg.hdr.opcode);
+   /* send the user's response to the server */
+   status = send(cfd, &send_msg, sizeof(Msg), 0);
+   if (status == -1) {
+      fprintf(stderr, "*** Server error: unable to send\n");
+      return;
+    }
+               
+
+   /* Wait for responses from the server (Bob, User B) */
+   while ( 1 ) {
+
+   /* receive messages from server */
+   nbytes = recv(cfd, &recv_msg, sizeof(Msg), 0);
+   if (nbytes == -1) {
+      fprintf(stderr, "*** Client error: unable to receive\n");
+      
+   }
+
+   flag = 1;   
+  
+   if (flag == 0 ) exit(0); 
+	
+   return recv_msg;
+  
+ }
+
+}
+
+int Authenticate(int iSockFd, char *iUID, char *iPWD)
+
+{
+ LoginReq tLoginReq;
+ Hdr tHdr;
+ Msg tMsg, tRespMsg;
+
+ tMsg.hdr.opcode = LOGINREQ;
+ snprintf(tMsg.MsgPayload.uLoginReq.UID, kUserNameSize+1, "%s", iUID);
+ snprintf(tMsg.MsgPayload.uLoginReq.PWD, kPasswdSize+1, "%s", iPWD);
+ 
+ printf(" Username : %s\n", tMsg.MsgPayload.uLoginReq.UID);
+ printf(" Password : %s\n", tMsg.MsgPayload.uLoginReq.PWD);
+ 
+
+ tRespMsg = Talk_to_server( iSockFd, tMsg );
+
+ if( tRespMsg.hdr.opcode == LOGINREP && tRespMsg.MsgPayload.uLoginResp.LoginStatus == LOGINSUCCESSFUL ) {
+	return 0;
+ }else{
+	return -1;
+ }
+
+	
+}
+
+int RequestSessionKey(int iSockFd){
+
+  Hdr tHdr;
+  Msg tMsg, tRespMsg;
+  char *plaintext, *ciphertext;
+  long int q, alpha, secret_key, public_key, private_key;
+  long int X_A, Y_A, Y_B;
+
+
+	printf("\n Key Generaion has been strated:\n\r");	
+	KeyGeneration(&q, &alpha, &private_key, &public_key);
+	printf("Global public elements are q = %ld, alpha = %ld\n\r", q, alpha);
+
+	printf("Public Key for client is Y_A: %ld\n\r", public_key);
+
+	printf("Private key for client is X_A: %ld\n\r", private_key);
+   
+   X_A = private_key;
+   Y_A = public_key;
+
+  /* send the public key to server */
+   printf("Sending the public key to Server\n");          
+   tMsg.hdr.opcode = PUBKEY;
+                
+   /* send the public key to Bob */
+   tMsg.MsgPayload.uDHPubKey.q = q;  /* q */
+   tMsg.MsgPayload.uDHPubKey.g = alpha; /* alpha */
+   tMsg.MsgPayload.uDHPubKey.Y = Y_A;  /* value of public key */
+
+    tRespMsg = Talk_to_server( iSockFd, tMsg );
+
+    printf("Received public values from server are q = %ld, alpha = %ld, Y_A = %ld\n\r", 
+                       tRespMsg.MsgPayload.uDHPubKey.q, tRespMsg.MsgPayload.uDHPubKey.g, tRespMsg.MsgPayload.uDHPubKey.Y);
+
+    Y_B = tRespMsg.MsgPayload.uDHPubKey.Y;
+
+    secret_key = ModPower(Y_B, X_A, q);
+    KEY = secret_key;
+    printf("Computed secret shared key by client is %ld\n\r", secret_key);
+
+}
+
+int ReceiveFile(int iSockFd, char *iFileName)
+
+{
+
+ Hdr tHdr;
+ Msg tMsg, *recv_msg;
+ int status = 0, nbytes = 0;
+
+ tMsg.hdr.opcode = REQSERV;
+ snprintf(tMsg.MsgPayload.uRecvFileReq.FileName, kMaxFileNameSize+1, "%s", iFileName);
+
+ 
+ printf(" Filename : %s\n", tMsg.MsgPayload.uRecvFileReq.FileName);
+ 
+ status = send(iSockFd, &tMsg, sizeof(Msg), 0);
+   		
+	if (status == -1) {
+
+      			fprintf(stderr, "*** Server error: unable to send\n");
+      			return -1;
+	} 
+
+ /* Start Receiving File */
+	
+  FILE *fp = fopen(iFileName, "a+");
+
+   /* Wait for responses from the server */
+   while ( 1 ) {
+
+   recv_msg = (Msg*)malloc(sizeof(Msg));
+
+   /* receive messages from server */
+   nbytes = recv(iSockFd, recv_msg, sizeof(Msg), 0);
+
+   if (nbytes == -1) {
+      fprintf(stderr, "*** Client error: unable to receive\n");
+      return -1;
+   }
+
+   if ( recv_msg->hdr.opcode == ENCMSG ) {
+	char *plaintext = (char*)malloc(MAX_LEN*sizeof(char));
+	printf(" Encrypeted text received : %s",recv_msg->MsgPayload.uFileData.FData);
+	DecryptionAlgorithm(recv_msg->MsgPayload.uFileData.FData, KEY, plaintext);
+	nbytes = fwrite(plaintext, sizeof(char), strlen(recv_msg->MsgPayload.uFileData.FData), fp);
+
+   }else if ( recv_msg->hdr.opcode == REQCOM ){
+
+	printf("End of file transfer\n");
+	free(recv_msg);
+	break;
+   }
+	
+	free(recv_msg);
+   }
+
+  fclose(fp);	
+
+return 0;
+ 
+}
+
+int main(int argc, char *argv[]) {
+
+
+    int i = 0;	
+    gindex[0]='\n';
+    for(i=32;i<128;i++)
+    {
+        gindex[i-31]=i;
+    }
+
+
+	if ( 5 > argc )
+	{
+		printf(" Too Few Arguments... \n");
+		printf(" USAGE : ./client <serverip> <userid> <password> <filename>\n" );
+		exit(-1);
+	}
+	
+	int tSockFd = serverConnect(argv[1]);
+	int AuthStatus = Authenticate(tSockFd, argv[2],argv[3]);
+
+	if( -1 == AuthStatus ) {
+		printf( " Login Failed...\n");
+		return -1;
+	}
+
+	 printf(" Login Successful...\n");
+	int SessionKeyStatus = RequestSessionKey(tSockFd);
+
+	printf( " Requesting server to send file : " );
+	ReceiveFile(tSockFd, argv[4]);
+       
+
+	return 0;
+}
+
